@@ -1,8 +1,7 @@
 import cv2
-import Adafruit_DHT
 import threading
 import time
-import RPi.GPIO as GPIO
+import serial
 import numpy as np
 
 from flask import (Flask, Response, render_template)
@@ -32,17 +31,16 @@ class Datapipe:
 
 
 def poll_sensors(dp, rate):
-    GPIO.setmode(GPIO.BCM)
-    GPIO.setup(17, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
+    with serial.Serial(port='/dev/ttyACM0', baudrate=9600, timeout=2.) as device:
+        while True:
+            device.readline()
+            time.sleep(rate)
 
-    while True:
-        humidity, celsius = Adafruit_DHT.read_retry(11, 4)
-        fahrenheit = celsius * (9/5) + 32
-
-        photo_resistor = GPIO.input(17)
-
-        dp.set_msg([humidity, fahrenheit, photo_resistor])
-        time.sleep(rate)
+            data = device.readline().decode().rstrip().split(",")
+            if len(data) > 1:
+                fahrenheit = float(data[0]) * (9/5) + 32
+                brightness = 100. if float(data[1]) > 100. else float(data[1])
+                dp.set_msg([fahrenheit, brightness])
 
 
 def get_bbox(frame, outs, idx=0, objectness_threshold=0.5, conf_threshold=0.5, nms_threshold=0.5):
@@ -85,11 +83,12 @@ def acquire_frames():
     output_layers = [layers[i - 1] for i in net.getUnconnectedOutLayers()]
     
     dp = Datapipe()
-    poll_sensors_t = threading.Thread(target=poll_sensors, args=(dp, 10,), daemon=True)
+    poll_sensors_t = threading.Thread(target=poll_sensors, args=(dp, 1,), daemon=True)
     poll_sensors_t.start()
 
     tracking = False
-    last = [0., 0., 0]
+    last = [0., 0.]
+    last_midpoint = [-1., -1.]
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
@@ -126,9 +125,15 @@ def acquire_frames():
             p2 = (int(bbox[0] + bbox[2]), int(bbox[1] + bbox[3]))
             cv2.rectangle(frame, p1, p2, (0, 255, 0))
 
-        brightness = 'room is bright' if not msg[2] else 'room is dark'
-        txt = 'Temp: {0:0.1f}F Hummidity: {1:0.1f}%'.format(msg[1], msg[0])
-        txt += ' and ' + brightness
+            midpoint = [(p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2]
+            if -1 not in last_midpoint:
+                d = np.linalg.norm((np.array(midpoint) - np.array(last_midpoint)))
+                if d > 10:
+                    cv2.putText(frame, "Baby is moving", (20, 20), cv2.FONT_HERSHEY_COMPLEX, 0.6, (0, 0, 255), 1)
+
+            last_midpoint = midpoint
+
+        txt = 'Temp: {0:0.1f}F Brightness: {1:0.1f}%'.format(msg[0], msg[1])
         last = msg
 
         h, w, c = frame.shape
