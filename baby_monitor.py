@@ -115,10 +115,11 @@ def acquire_frames():
                 tracker.init(frame, bbox)
                 tracking = True
 
-                ok, bbox = tracker.update(frame)
-                if not ok:
-                    cv2.putText(frame, error_txt, (20, 20), cv2.FONT_HERSHEY_COMPLEX, 0.6, (0, 0, 255), 1)
-                    tracking = False
+        else:
+            ok, bbox = tracker.update(frame)
+            if not ok:
+                cv2.putText(frame, error_txt, (20, 20), cv2.FONT_HERSHEY_COMPLEX, 0.6, (0, 0, 255), 1)
+                tracking = False
 
         if len(bbox) == 4:
             p1 = (int(bbox[0]), int(bbox[1]))

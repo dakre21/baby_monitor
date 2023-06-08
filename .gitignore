@@ -161,3 +161,6 @@ cython_debug/
 
 yolov3.cfg
 yolov3.weights
+
+yolov3-tiny.cfg
+yolov3-tiny.weights
