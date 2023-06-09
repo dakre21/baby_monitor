@@ -3,26 +3,43 @@ import threading
 import time
 import serial
 import numpy as np
+import os
 
 from flask import (Flask, Response, render_template)
-
-app = Flask(__name__)
 
 
 class Datapipe:
     def __init__(self):
         self.msg = []
+        self.state = 1
+        self.state_lock = threading.Lock()
         self.producer_lock = threading.Lock()
         self.consumer_lock = threading.Lock()
         self.consumer_lock.acquire()
 
-    def get_msg(self):
+    
+    def get_state(self):
+        state = -1
+        self.state_lock.acquire()
+        state = self.state
+        self.state_lock.release()
+        return state
+
+
+    def set_state(self, val):
+        self.state_lock.acquire()
+        self.state = val
+        self.state_lock.release()
+        
+
+    def get_msg(self, blocking=False):
         msg = []
-        if not self.consumer_lock.locked():
+        if blocking or not self.consumer_lock.locked():
             self.consumer_lock.acquire()
             msg = self.msg
             self.producer_lock.release()
         return msg
+
 
     def set_msg(self, msg):
         self.producer_lock.acquire()
@@ -30,17 +47,27 @@ class Datapipe:
         self.consumer_lock.release()
 
 
-def poll_sensors(dp, rate):
-    with serial.Serial(port='/dev/ttyACM0', baudrate=9600, timeout=2.) as device:
-        while True:
-            device.readline()
-            time.sleep(rate)
+# Global var decls
+cdp, sdp = Datapipe(), Datapipe()
 
+app = Flask(__name__)
+
+
+def poll_sensors(rate):
+    global sdp
+
+    with serial.Serial(port='/dev/ttyACM0', baudrate=9600, timeout=2.) as device:
+        device.readline()
+        while sdp.get_state():
             data = device.readline().decode().rstrip().split(",")
             if len(data) > 1:
                 fahrenheit = float(data[0]) * (9/5) + 32
                 brightness = 100. if float(data[1]) > 100. else float(data[1])
-                dp.set_msg([fahrenheit, brightness])
+                sdp.set_msg([fahrenheit, brightness])
+
+            time.sleep(rate)
+    
+    print('Leaving poll_sensors function')
 
 
 def get_bbox(frame, outs, idx=0, objectness_threshold=0.5, conf_threshold=0.5, nms_threshold=0.5):
@@ -73,6 +100,8 @@ def get_bbox(frame, outs, idx=0, objectness_threshold=0.5, conf_threshold=0.5, n
 
 
 def acquire_frames():
+    global cdp
+
     cap = cv2.VideoCapture(0)
 
     net = cv2.dnn.readNetFromDarknet('yolov3.cfg', 'yolov3.weights')
@@ -82,21 +111,14 @@ def acquire_frames():
     layers = net.getLayerNames()
     output_layers = [layers[i - 1] for i in net.getUnconnectedOutLayers()]
     
-    dp = Datapipe()
-    poll_sensors_t = threading.Thread(target=poll_sensors, args=(dp, 1,), daemon=True)
-    poll_sensors_t.start()
-
     tracking = False
     last = [0., 0.]
     last_midpoint = [-1., -1.]
-    while cap.isOpened():
+
+    while cdp.get_state() and cap.isOpened():
         ret, frame = cap.read()
         if not ret:
             break
-
-        msg = dp.get_msg() 
-        if not len(msg):
-            msg = last
 
         bbox = []
         if not tracking:
@@ -133,8 +155,26 @@ def acquire_frames():
 
             last_midpoint = midpoint
 
-        txt = 'Temp: {0:0.1f}F Brightness: {1:0.1f}%'.format(msg[0], msg[1])
-        last = msg
+        cdp.set_msg([frame])
+
+    print('Leaving acquire frames function')
+
+    cap.release()
+
+
+def render_stream():
+    global sdp, cdp
+
+    last_meta = [0., 0.]
+    while True:
+        frame = np.squeeze(cdp.get_msg(True))
+        meta = sdp.get_msg()
+
+        if not len(meta):
+            meta = last_meta
+
+        txt = 'Temp: {0:0.1f}F Brightness: {1:0.1f}%'.format(meta[0], meta[1])
+        last_meta = meta
 
         h, w, c = frame.shape
         cv2.putText(frame, txt, (20, h-10), cv2.FONT_HERSHEY_COMPLEX, 0.6, (0, 255, 0), 1)
@@ -146,8 +186,6 @@ def acquire_frames():
         frame = img.tobytes()
         yield(b'--frame\r\n'b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
 
-    cap.release()
-
 
 @app.route('/')
 def index():
@@ -156,8 +194,17 @@ def index():
 
 @app.route('/stream')
 def stream():
-    return Response(acquire_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+    return Response(render_stream(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', debug=True)
+    poll_sensors_t = threading.Thread(target=poll_sensors, args=(1,), daemon=True)
+    poll_sensors_t.start()
+
+    acquire_frames_t = threading.Thread(target=acquire_frames, args=(), daemon=True)
+    acquire_frames_t.start()
+
+    app.run(host='0.0.0.0')
+
+    sdp.set_state(0)
+    cdp.set_state(0)
