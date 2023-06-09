@@ -198,13 +198,16 @@ def stream():
 
 
 if __name__ == '__main__':
-    poll_sensors_t = threading.Thread(target=poll_sensors, args=(1,), daemon=True)
+    poll_sensors_t = threading.Thread(target=poll_sensors, args=(1,))
     poll_sensors_t.start()
 
-    acquire_frames_t = threading.Thread(target=acquire_frames, args=(), daemon=True)
+    acquire_frames_t = threading.Thread(target=acquire_frames, args=())
     acquire_frames_t.start()
 
     app.run(host='0.0.0.0')
 
     sdp.set_state(0)
     cdp.set_state(0)
+
+    poll_sensors_t.join()
+    acquire_frames_t.join()
