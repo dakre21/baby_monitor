@@ -1,0 +1,12 @@
+[Unit]
+Description=Baby Monitor
+After=network.target
+
+[Service]
+Type=simple
+User=dakre
+ExecStart=/bin/bash baby_monitor.sh
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target

@@ -1,7 +1,6 @@
 import cv2
 import threading
 import time
-import serial
 import numpy as np
 import os
 
@@ -56,14 +55,27 @@ app = Flask(__name__)
 def poll_sensors(rate):
     global sdp
 
-    with serial.Serial(port='/dev/ttyACM0', baudrate=9600, timeout=2.) as device:
+    device = None
+    while sdp.get_state():
+        if not device:
+            try:
+                import serial
+                device = serial.Serial(port='/dev/ttyACM0', baudrate=9600, timeout=2.)
+            except:
+                print('Serial device not ready')
+                time.sleep(rate)
+                continue
+
         device.readline()
         while sdp.get_state():
-            data = device.readline().decode().rstrip().split(",")
-            if len(data) > 1:
-                fahrenheit = float(data[0]) * (9/5) + 32
-                brightness = 100. if float(data[1]) > 100. else float(data[1])
-                sdp.set_msg([fahrenheit, brightness])
+            try:
+                data = device.readline().decode().rstrip().split(",")
+                if len(data) > 1:
+                    fahrenheit = float(data[0]) * (9/5) + 32
+                    brightness = 100. if float(data[1]) > 100. else float(data[1])
+                    sdp.set_msg([fahrenheit, brightness])
+            except:
+                print('Error reading serial device')
 
             time.sleep(rate)
     
